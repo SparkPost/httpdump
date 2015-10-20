@@ -6,7 +6,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/yargevad/http/sqlite3"
+	"github.com/yargevad/http/dumpto"
+	"github.com/yargevad/http/dumpto/sqlite3"
 )
 
 // Command line option declarations.
@@ -16,12 +17,14 @@ var dateFmt = flag.String("datefmt", "day", "how much of the date to include in 
 func main() {
 	flag.Parse()
 
-	sqliteDumper, err := sqlite3.HandlerFactory(*dateFmt)
+	sqlDumper, err := sqlite3.NewDumper(*dateFmt)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	http.HandleFunc("/", sqliteDumper)
+	reqDumper := dumpto.HandlerFactory(sqlDumper)
+
+	http.HandleFunc("/", reqDumper)
 	portSpec := fmt.Sprintf(":%d", *port)
 	log.Fatal(http.ListenAndServe(portSpec, nil))
 }

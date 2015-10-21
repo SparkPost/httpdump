@@ -20,9 +20,11 @@ var DateFormats = map[string]string{
 	"minute": "2006-01-02T15-04-MST",
 }
 
-// TODO: specify path where db file should be created
+// TODO: no date in db filename, reuse same file for every event, delete as they're processed
+// TODO: expire events after N seconds
 
 type SQLiteDumper struct {
+	dbPath        string
 	dateFormat    string
 	curDate       string
 	curDateRWLock *sync.RWMutex
@@ -33,7 +35,8 @@ type SQLiteDumper struct {
 // reopenDBFile opens a database handle and initializes the schema if necessary.
 func (ctx *SQLiteDumper) reopenDBFile(dbfile string) error {
 	mustInit := false
-	file, err := os.Open(dbfile)
+	filePath := fmt.Sprintf("%s/%s", ctx.dbPath, dbfile)
+	file, err := os.Open(filePath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return err
@@ -100,13 +103,15 @@ func (ctx *SQLiteDumper) updateCurDate(now time.Time) error {
 }
 
 // NewDumper returns an initialized SQLiteDumper that dumps request data to an SQLite db file.
-func NewDumper(dateFmt string) (*SQLiteDumper, error) {
+func NewDumper(dateFmt string, dbPath string) (*SQLiteDumper, error) {
+	// TODO: if dateFmt contains ".db", use that as the db filename
 	if dateFmt != "day" && dateFmt != "hour" && dateFmt != "minute" {
 		return nil, fmt.Errorf("`datefmt` must be one of (`day`, `hour`, `minute`), not [%s]", dateFmt)
 	}
 
 	// Set up a dumper, configured with the provided date granularity.
 	sqld := &SQLiteDumper{
+		dbPath:        dbPath,
 		dateFormat:    dateFmt,
 		curDateRWLock: &sync.RWMutex{},
 		dbhRWLock:     &sync.RWMutex{},

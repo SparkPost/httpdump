@@ -17,7 +17,7 @@ var dateFmt = flag.String("datefmt", "day", "how much of the date to include in 
 func main() {
 	flag.Parse()
 
-	sqlDumper, err := sqlite3.NewDumper(*dateFmt)
+	sqlDumper, err := sqlite3.NewDumper(*dateFmt, "./")
 	if err != nil {
 		log.Fatal(err)
 	}

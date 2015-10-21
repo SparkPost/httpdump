@@ -4,6 +4,7 @@ package sqlite3
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sync"
@@ -21,7 +22,6 @@ var DateFormats = map[string]string{
 }
 
 // TODO: no date in db filename, reuse same file for every event, delete as they're processed
-// TODO: expire events after N seconds
 
 type SQLiteDumper struct {
 	dbPath        string
@@ -55,7 +55,13 @@ func (ctx *SQLiteDumper) reopenDBFile(dbfile string) error {
 	if mustInit {
 		log.Printf("Initializing schema for [%s]\n", dbfile)
 		_, err := ctx.dbh.Exec(`
-			CREATE TABLE raw_requests (head blob, data blob, date text)
+			CREATE TABLE raw_requests (
+				id    integer primary key autoincrement,
+				head  blob,
+				data  blob,
+				date  timestamp,
+				batch int
+			)
 		`, nil)
 		if err != nil {
 			return err
@@ -104,7 +110,7 @@ func (ctx *SQLiteDumper) updateCurDate(now time.Time) error {
 
 // NewDumper returns an initialized SQLiteDumper that dumps request data to an SQLite db file.
 func NewDumper(dateFmt string, dbPath string) (*SQLiteDumper, error) {
-	// TODO: if dateFmt contains ".db", use that as the db filename
+	// TODO: if dateFmt matches "\w+.db", use that as the db filename
 	if dateFmt != "day" && dateFmt != "hour" && dateFmt != "minute" {
 		return nil, fmt.Errorf("`datefmt` must be one of (`day`, `hour`, `minute`), not [%s]", dateFmt)
 	}
@@ -117,25 +123,121 @@ func NewDumper(dateFmt string, dbPath string) (*SQLiteDumper, error) {
 		dbhRWLock:     &sync.RWMutex{},
 	}
 
+	// Make sure we're using the db file for "right now"
+	err := sqld.updateCurDate(time.Now())
+	if err != nil {
+		return nil, err
+	}
+
 	return sqld, nil
 }
 
-func (sqld *SQLiteDumper) DumpRequest(req *dumpto.Request) error {
-	// Make sure we're using the db file for "right now"
-	err := sqld.updateCurDate(req.When)
-	if err != nil {
-		return err
-	}
-
+func (sqld *SQLiteDumper) Dump(req *dumpto.Request) error {
 	// Get a "read lock" on our db pool.
 	sqld.dbhRWLock.RLock()
 	defer sqld.dbhRWLock.RUnlock()
 
 	// Insert data for the current request.
-	_, err = sqld.dbh.Exec(`
+	_, err := sqld.dbh.Exec(`
 			INSERT INTO raw_requests (head, data, date)
 			VALUES ($1, $2, $3)
-		`, string(req.Head), string(req.Data), req.When.Format(time.RFC3339))
+		`, string(req.Head), string(req.Data), req.When)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (sqld *SQLiteDumper) MarkBatch() (int, error) {
+	// Get value of largest ID
+	rows, err := sqld.dbh.Query(`
+		SELECT max(id) FROM raw_requests
+		 WHERE (batch == 0 OR batch IS NULL)
+	`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	rv := rows.Next()
+	err = rows.Err()
+	if rv == false {
+		return 0, err
+	}
+	var maxID sql.NullInt64
+	err = rows.Scan(&maxID)
+	if err != nil {
+		return 0, err
+	}
+	rows.Close()
+
+	if maxID.Valid == false {
+		return 0, nil
+	}
+
+	// Update batch to the value of the largest ID in the current batch
+	res, err := sqld.dbh.Exec(`
+		UPDATE raw_requests SET batch = $1
+		 WHERE (batch == 0 OR batch IS NULL)
+		   AND id <= $1
+	`, maxID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	} else if n <= 0 {
+		return 0, nil
+	}
+
+	return int(maxID.Int64), nil
+}
+
+func (sqld *SQLiteDumper) ReadRequests(batchID int) ([]dumpto.Request, error) {
+	// TODO: make initial size configurable
+	reqs := make([]dumpto.Request, 0, 32)
+	n := 0
+
+	// Get all requests for this batch
+	rows, err := sqld.dbh.Query(`
+			SELECT id, head, data, date
+			  FROM raw_requests
+			 WHERE batch == $1
+			 ORDER BY date ASC
+		`, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tmpID int
+	for rows.Next() {
+		if rows.Err() == io.EOF {
+			break
+		}
+		req := &dumpto.Request{}
+		err = rows.Scan(&tmpID, &req.Head, &req.Data, &req.When)
+		if err != nil {
+			return nil, err
+		}
+		req.ID = &tmpID
+
+		reqs = append(reqs, *req)
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	return reqs, nil
+}
+
+func (sqld *SQLiteDumper) BatchDone(batchID int) error {
+	_, err := sqld.dbh.Exec(`
+		UPDATE raw_requests SET batch=-1
+		 WHERE batch = $1
+	`, batchID)
 	if err != nil {
 		return err
 	}

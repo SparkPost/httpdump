@@ -10,6 +10,7 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/yargevad/http/dumpto"
 )
 
 // Map shortcuts strings to verbose date formats.
@@ -114,9 +115,9 @@ func NewDumper(dateFmt string) (*SQLiteDumper, error) {
 	return sqld, nil
 }
 
-func (sqld *SQLiteDumper) DumpRequest(head, data []byte, now time.Time) error {
+func (sqld *SQLiteDumper) DumpRequest(req *dumpto.Request) error {
 	// Make sure we're using the db file for "right now"
-	err := sqld.updateCurDate(now)
+	err := sqld.updateCurDate(req.When)
 	if err != nil {
 		return err
 	}
@@ -129,7 +130,7 @@ func (sqld *SQLiteDumper) DumpRequest(head, data []byte, now time.Time) error {
 	_, err = sqld.dbh.Exec(`
 			INSERT INTO raw_requests (head, data, date)
 			VALUES ($1, $2, $3)
-		`, string(head), string(data), now.Format(time.RFC3339))
+		`, string(req.Head), string(req.Data), req.When.Format(time.RFC3339))
 	if err != nil {
 		return err
 	}

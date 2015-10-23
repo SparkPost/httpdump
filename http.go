@@ -17,6 +17,7 @@ var dateFmt = flag.String("datefmt", "day", "how much of the date to include in 
 var batchInterval = flag.Int("batch-interval", 10, "how often to process stored requests")
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	flag.Parse()
 
 	sqlDumper, err := sqlite3.NewDumper(*dateFmt, "./")

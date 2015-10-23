@@ -70,9 +70,6 @@ func ProcessBatch(b Batcher) (int, error) {
 		return 0, nil
 	}
 	// TODO: take an interface param that pushes out these events
-	for _, req := range reqs {
-		log.Printf("%s", req)
-	}
 
 	err = b.BatchDone(batchID)
 	if err != nil {

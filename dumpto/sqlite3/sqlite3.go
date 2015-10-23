@@ -7,11 +7,17 @@ import (
 	"io"
 	"log"
 	"os"
+	re "regexp"
 	"sync"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	sqlite3 "github.com/mattn/go-sqlite3"
 	"github.com/yargevad/http/dumpto"
+)
+
+// https://www.sqlite.org/rescode.html
+const (
+	SQLITE_LOCKED = 6
 )
 
 // Map shortcuts strings to verbose date formats.
@@ -21,10 +27,9 @@ var DateFormats = map[string]string{
 	"minute": "2006-01-02T15-04-MST",
 }
 
-// TODO: no date in db filename, reuse same file for every event, delete as they're processed
-
 type SQLiteDumper struct {
 	dbPath        string
+	inMemory      bool
 	dateFormat    string
 	curDate       string
 	curDateRWLock *sync.RWMutex
@@ -35,26 +40,38 @@ type SQLiteDumper struct {
 // reopenDBFile opens a database handle and initializes the schema if necessary.
 func (ctx *SQLiteDumper) reopenDBFile(dbfile string) error {
 	mustInit := false
-	filePath := fmt.Sprintf("%s/%s", ctx.dbPath, dbfile)
-	file, err := os.Open(filePath)
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return err
+	if ctx.inMemory == true {
+		if ctx.dbh == nil {
+			mustInit = true
+		} else {
+			return nil
 		}
-		// DB file didn't exist, we need to init schema.
-		mustInit = true
+
 	} else {
-		file.Close()
+		filePath := fmt.Sprintf("%s/%s", ctx.dbPath, dbfile)
+		file, err := os.Open(filePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+			// DB file didn't exist, we need to init schema.
+			mustInit = true
+		} else {
+			file.Close()
+		}
 	}
 
-	ctx.dbh, err = sql.Open("sqlite3", dbfile)
+	dbh, err := sql.Open("sqlite3", dbfile)
 	if err != nil {
+		return err
+	}
+	if err = dbh.Ping(); err != nil {
 		return err
 	}
 
 	if mustInit {
 		log.Printf("Initializing schema for [%s]\n", dbfile)
-		_, err := ctx.dbh.Exec(`
+		_, err := dbh.Exec(`
 			CREATE TABLE raw_requests (
 				id    integer primary key autoincrement,
 				head  blob,
@@ -68,6 +85,7 @@ func (ctx *SQLiteDumper) reopenDBFile(dbfile string) error {
 		}
 	}
 
+	ctx.dbh = dbh
 	return nil
 }
 
@@ -87,43 +105,66 @@ func (ctx *SQLiteDumper) getCurDate() string {
 
 // updateCurDate makes sure we're writing to the correct db file.
 func (ctx *SQLiteDumper) updateCurDate(now time.Time) error {
-	cur := ctx.getCurDate()
-	nowstr := now.Format(DateFormats[ctx.dateFormat])
-	// If the date has changed since the last time we checked, open the new file.
-	if cur != nowstr {
-		ctx.setCurDate(nowstr)
-		dbfile := fmt.Sprintf("%s.db", nowstr)
-		var err error
-		ctx.dbhRWLock.Lock()
-		defer ctx.dbhRWLock.Unlock()
-		if ctx.dbh != nil {
-			ctx.dbh.Close()
-		}
-		err = ctx.reopenDBFile(dbfile)
-		if err != nil {
-			return err
+	if ctx.inMemory == true {
+		if ctx.dbh == nil {
+			log.Printf("Opening database [%s]\n", ctx.dateFormat)
+			err := ctx.reopenDBFile(ctx.dateFormat)
+			if err != nil {
+				return err
+			}
 		}
 
+	} else {
+		cur := ctx.getCurDate()
+		nowstr := now.Format(DateFormats[ctx.dateFormat])
+		// If the date has changed since the last time we checked, open the new file.
+		if cur != nowstr {
+			ctx.setCurDate(nowstr)
+			dbfile := fmt.Sprintf("%s.db", nowstr)
+			ctx.dbhRWLock.Lock()
+			defer ctx.dbhRWLock.Unlock()
+			if ctx.dbh != nil {
+				ctx.dbh.Close()
+			}
+			err := ctx.reopenDBFile(dbfile)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
+var dbPattern *re.Regexp = re.MustCompile(`\w+.db`)
+
 // NewDumper returns an initialized SQLiteDumper that dumps request data to an SQLite db file.
-func NewDumper(dateFmt string, dbPath string) (*SQLiteDumper, error) {
-	// TODO: if dateFmt matches "\w+.db", use that as the db filename
-	if dateFmt != "day" && dateFmt != "hour" && dateFmt != "minute" {
+func NewDumper(dateFmt, dbPath string) (*SQLiteDumper, error) {
+	inMemory := false
+	if dateFmt == "memory" {
+		// Use an in-memory database
+		inMemory = true
+		// With a shared cache: http://www.sqlite.org/sharedcache.html
+		dateFmt = "file:foo.db?cache=shared&mode=memory"
+
+		//} else if dbPattern.MatchString(dateFmt) {
+		// TODO: if dateFmt matches "\w+.db", use that as the db filename
+
+	} else if dateFmt != "day" && dateFmt != "hour" && dateFmt != "minute" {
+		// Use a dynamic filename based on the current time.
 		return nil, fmt.Errorf("`datefmt` must be one of (`day`, `hour`, `minute`), not [%s]", dateFmt)
 	}
 
 	// Set up a dumper, configured with the provided date granularity.
 	sqld := &SQLiteDumper{
 		dbPath:        dbPath,
+		inMemory:      inMemory,
 		dateFormat:    dateFmt,
 		curDateRWLock: &sync.RWMutex{},
 		dbhRWLock:     &sync.RWMutex{},
 	}
 
-	// Make sure we're using the db file for "right now"
+	// Make sure we're using the db file for "right now", and
+	// make sure the database handle is initialized right away
 	err := sqld.updateCurDate(time.Now())
 	if err != nil {
 		return nil, err
@@ -132,13 +173,62 @@ func NewDumper(dateFmt string, dbPath string) (*SQLiteDumper, error) {
 	return sqld, nil
 }
 
-func (sqld *SQLiteDumper) Dump(req *dumpto.Request) error {
-	// Get a "read lock" on our db pool.
-	sqld.dbhRWLock.RLock()
-	defer sqld.dbhRWLock.RUnlock()
+func QueryRetry(db *sql.DB, codes map[int]bool, after time.Duration, query string, args ...interface{}) (*sql.Rows, error) {
+	for {
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			if sqlErr, ok := err.(sqlite3.Error); ok {
+				if _, ok := codes[int(sqlErr.Code)]; ok {
+					// delay for the specified amount of time before retrying
+					select {
+					case <-time.After(after):
+					}
+				} else {
+					return nil, fmt.Errorf("%s: %d/%d", err, int(sqlErr.Code), int(sqlErr.ExtendedCode))
+				}
+			} else {
+				log.Printf("Couldn't convert error to sqlite3.Error")
+				return nil, err
+			}
+		} else {
+			return rows, err
+		}
+	}
+}
 
-	// Insert data for the current request.
-	_, err := sqld.dbh.Exec(`
+func ExecRetry(db *sql.DB, codes map[int]bool, after time.Duration, query string, args ...interface{}) (sql.Result, error) {
+	for {
+		res, err := db.Exec(query, args...)
+		if err != nil {
+			if sqlErr, ok := err.(sqlite3.Error); ok {
+				if _, ok := codes[int(sqlErr.Code)]; ok {
+					// delay for the specified amount of time before retrying
+					select {
+					case <-time.After(after):
+					}
+				} else {
+					return nil, fmt.Errorf("%s: %d/%d", err, int(sqlErr.Code), int(sqlErr.ExtendedCode))
+				}
+			} else {
+				log.Printf("Couldn't convert error to sqlite3.Error")
+				return nil, err
+			}
+		} else {
+			return res, err
+		}
+	}
+}
+
+func (sqld *SQLiteDumper) Dump(req *dumpto.Request) error {
+	// Get a "read lock" on our db pool, if needed.
+	// The in-memory db doesn't need a lock since it won't change after the first init.
+	if sqld.inMemory == false {
+		sqld.dbhRWLock.RLock()
+		defer sqld.dbhRWLock.RUnlock()
+	}
+
+	// Insert data for the current request, retrying on SQL_LOCKED.
+	_, err := ExecRetry(sqld.dbh, map[int]bool{SQLITE_LOCKED: true}, (10 * time.Millisecond), `
 			INSERT INTO raw_requests (head, data, date)
 			VALUES ($1, $2, $3)
 		`, string(req.Head), string(req.Data), req.When)
@@ -149,8 +239,13 @@ func (sqld *SQLiteDumper) Dump(req *dumpto.Request) error {
 }
 
 func (sqld *SQLiteDumper) MarkBatch() (int, error) {
-	// Get value of largest ID
-	rows, err := sqld.dbh.Query(`
+	if sqld.dbh == nil {
+		log.Printf("MarkBatch: Can't write to nil database handle!\n")
+		return 0, nil
+	}
+
+	// Get value of largest ID, retrying on SQL_LOCKED.
+	rows, err := QueryRetry(sqld.dbh, map[int]bool{SQLITE_LOCKED: true}, (10 * time.Millisecond), `
 		SELECT max(id) FROM raw_requests
 		 WHERE (batch == 0 OR batch IS NULL)
 	`)
@@ -174,8 +269,8 @@ func (sqld *SQLiteDumper) MarkBatch() (int, error) {
 		return 0, nil
 	}
 
-	// Update batch to the value of the largest ID in the current batch
-	res, err := sqld.dbh.Exec(`
+	// Update batch to the value of the largest ID in the current batch, retrying on SQL_LOCKED.
+	res, err := ExecRetry(sqld.dbh, map[int]bool{SQLITE_LOCKED: true}, (10 * time.Millisecond), `
 		UPDATE raw_requests SET batch = $1
 		 WHERE (batch == 0 OR batch IS NULL)
 		   AND id <= $1
@@ -198,8 +293,8 @@ func (sqld *SQLiteDumper) ReadRequests(batchID int) ([]dumpto.Request, error) {
 	reqs := make([]dumpto.Request, 0, 32)
 	n := 0
 
-	// Get all requests for this batch
-	rows, err := sqld.dbh.Query(`
+	// Get all requests for this batch, retrying on SQL_LOCKED.
+	rows, err := QueryRetry(sqld.dbh, map[int]bool{SQLITE_LOCKED: true}, (10 * time.Millisecond), `
 			SELECT id, head, data, date
 			  FROM raw_requests
 			 WHERE batch == $1
@@ -234,7 +329,7 @@ func (sqld *SQLiteDumper) ReadRequests(batchID int) ([]dumpto.Request, error) {
 }
 
 func (sqld *SQLiteDumper) BatchDone(batchID int) error {
-	_, err := sqld.dbh.Exec(`
+	_, err := ExecRetry(sqld.dbh, map[int]bool{SQLITE_LOCKED: true}, (10 * time.Millisecond), `
 		UPDATE raw_requests SET batch=-1
 		 WHERE batch = $1
 	`, batchID)

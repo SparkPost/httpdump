@@ -17,7 +17,7 @@ type Dumper interface {
 // Request contains the various pieces of one http.Request, packaged up for easy reading or writing.
 // The id field is intended to be read-only, to uniquely identify a request to Batcher.BatchDone.
 type Request struct {
-	ID    *int
+	ID    *int64
 	Head  []byte
 	Data  []byte
 	When  time.Time
@@ -43,9 +43,9 @@ func (req *Request) String() string {
 
 // Batcher reads stored HTTP requests in a batch, marking them as processed when done.
 type Batcher interface {
-	MarkBatch() (batchID int, err error)
-	ReadRequests(batchID int) (reqs []Request, err error)
-	BatchDone(batchID int) error
+	MarkBatch() (batchID int64, err error)
+	ReadRequests(batchID int64) (reqs []Request, err error)
+	BatchDone(batchID int64) error
 }
 
 type DumpBatcher interface {

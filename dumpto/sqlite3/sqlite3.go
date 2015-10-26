@@ -71,17 +71,21 @@ func (ctx *SQLiteDumper) reopenDBFile(dbfile string) error {
 
 	if mustInit {
 		log.Printf("Initializing schema for [%s]\n", dbfile)
-		_, err := dbh.Exec(`
+		ddls := []string{`
 			CREATE TABLE raw_requests (
 				id    integer primary key autoincrement,
 				head  blob,
 				data  blob,
 				date  timestamp,
 				batch int
-			)
-		`, nil)
-		if err != nil {
-			return err
+			)`,
+			`CREATE INDEX raw_requests_batch_idx ON raw_requests (batch)`,
+		}
+		for _, ddl := range ddls {
+			_, err := dbh.Exec(ddl, nil)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -238,7 +242,7 @@ func (sqld *SQLiteDumper) Dump(req *dumpto.Request) error {
 	return nil
 }
 
-func (sqld *SQLiteDumper) MarkBatch() (int, error) {
+func (sqld *SQLiteDumper) MarkBatch() (int64, error) {
 	if sqld.dbh == nil {
 		log.Printf("MarkBatch: Can't write to nil database handle!\n")
 		return 0, nil
@@ -285,10 +289,10 @@ func (sqld *SQLiteDumper) MarkBatch() (int, error) {
 		return 0, nil
 	}
 
-	return int(maxID.Int64), nil
+	return maxID.Int64, nil
 }
 
-func (sqld *SQLiteDumper) ReadRequests(batchID int) ([]dumpto.Request, error) {
+func (sqld *SQLiteDumper) ReadRequests(batchID int64) ([]dumpto.Request, error) {
 	// TODO: make initial size configurable
 	reqs := make([]dumpto.Request, 0, 32)
 	n := 0
@@ -305,7 +309,7 @@ func (sqld *SQLiteDumper) ReadRequests(batchID int) ([]dumpto.Request, error) {
 	}
 	defer rows.Close()
 
-	var tmpID int
+	var tmpID int64
 	for rows.Next() {
 		if rows.Err() == io.EOF {
 			break
@@ -328,9 +332,9 @@ func (sqld *SQLiteDumper) ReadRequests(batchID int) ([]dumpto.Request, error) {
 	return reqs, nil
 }
 
-func (sqld *SQLiteDumper) BatchDone(batchID int) error {
+func (sqld *SQLiteDumper) BatchDone(batchID int64) error {
 	_, err := ExecRetry(sqld.dbh, map[int]bool{SQLITE_LOCKED: true}, (10 * time.Millisecond), `
-		UPDATE raw_requests SET batch=-1
+		DELETE FROM raw_requests
 		 WHERE batch = $1
 	`, batchID)
 	if err != nil {

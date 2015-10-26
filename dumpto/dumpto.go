@@ -48,12 +48,17 @@ type Batcher interface {
 	BatchDone(batchID int64) error
 }
 
+// Processor takes a list of HTTP requests and processes them somehow.
+type Processor interface {
+	ProcessRequests(reqs []Request) error
+}
+
 type DumpBatcher interface {
 	Dumper
 	Batcher
 }
 
-func ProcessBatch(b Batcher) (int, error) {
+func ProcessBatch(b Batcher, p Processor) (int, error) {
 	batchID, err := b.MarkBatch()
 	if err != nil {
 		return 0, err
@@ -69,7 +74,11 @@ func ProcessBatch(b Batcher) (int, error) {
 	if len(reqs) == 0 {
 		return 0, nil
 	}
-	// TODO: take an interface param that pushes out these events
+
+	err = p.ProcessRequests(reqs)
+	if err != nil {
+		return 0, err
+	}
 
 	err = b.BatchDone(batchID)
 	if err != nil {

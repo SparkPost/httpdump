@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	iou "io/ioutil"
 	"log"
 	"net/http"
+	httpu "net/http/httputil"
 	"os"
 	re "regexp"
 	"time"
@@ -17,24 +20,88 @@ import (
 var port = flag.Int("port", 80, "port to listen for requests")
 var batchInterval = flag.Int("batch-interval", 10, "how often to process stored requests")
 
+// Loggly contains all the information needed to submit messages.
 type Loggly struct {
 	Endpoint string
 	Client   *http.Client
 	BatchMax int64
 	EventMax int64
+	buf      *bytes.Buffer
+}
+
+// SendRequest does a POST to Loggly with the provided data.
+func (l *Loggly) SendRequest() error {
+	reqLen := len(l.buf.String())
+	req, err := http.NewRequest("POST", l.Endpoint, l.buf)
+	if err != nil {
+		return err
+	}
+
+	reqDump, err := httpu.DumpRequestOut(req, true)
+	if err != nil {
+		return err
+	}
+
+	res, err := l.Client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	if res.StatusCode != http.StatusOK {
+		resHeaders, err := httpu.DumpResponse(res, false)
+		if err != nil {
+			return err
+		}
+		resBody, err := iou.ReadAll(res.Body)
+		if err != nil {
+			return err
+		}
+		log.Printf("%s\n\n%s%s\n", string(reqDump), string(resHeaders), string(resBody))
+
+	} else {
+		log.Printf("Sent %d bytes with status %s\n", reqLen, res.Status)
+	}
+
+	return nil
 }
 
 var lineBreak *re.Regexp = re.MustCompile(`\r?\n`)
 
+// ProcessRequests formats dumpto.Request objects on one line and
+// submits to Loggly in appropriately-sized batches.
 func (l *Loggly) ProcessRequests(reqs []dumpto.Request) error {
-	size := 0
+	var size, esize int64
 	for _, req := range reqs {
 		head := lineBreak.ReplaceAll(req.Head, []byte(`\n`))
 		data := lineBreak.ReplaceAll(req.Data, []byte(`\n`))
-		size += len(head) + 1 + len(data)
-		log.Printf("[%s] [%s]\n", head, data)
-		return fmt.Errorf("[%s]", head)
+		esize = int64(len(head) + len(data))
+
+		if esize > l.EventMax {
+			log.Printf("WARNING: event size %d > event max %d\n%s%s\n",
+				esize, l.EventMax, string(head), string(data))
+			continue
+		}
+
+		l.buf.Write(head)
+		l.buf.Write(data)
+		if (size + esize) > l.BatchMax {
+			err := l.SendRequest()
+			if err != nil {
+				return err
+			}
+			l.buf.Reset()
+		}
+
+		size += esize
 	}
+
+	if size > 0 {
+		err := l.SendRequest()
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -46,8 +113,10 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	flag.Parse()
 
+	// Env vars we'll be checking for, mapped to the regular expressions
+	// we'll use to validate their values.
 	envVars := map[string]*re.Regexp{
-		//"LOGGLY_TOKEN":      uuid,
+		"LOGGLY_TOKEN":      uuid,
 		"POSTGRESQL_DB":     word,
 		"POSTGRESQL_USER":   word,
 		"POSTGRESQL_PASS":   pass,
@@ -61,6 +130,7 @@ func main() {
 		}
 	}
 
+	// Configure the PostgreSQL dumper.
 	pgDumper := &pg.PgDumper{
 		Db:     opts["POSTGRESQL_DB"],
 		Schema: opts["POSTGRESQL_SCHEMA"],
@@ -72,14 +142,19 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Configure the Loggly processor
 	loggly := &Loggly{
 		Endpoint: fmt.Sprintf("https://logs-01.loggly.com/bulk/%s/tag/bulk/", opts["LOGGLY_TOKEN"]),
 		Client:   &http.Client{},
 		BatchMax: 5 * 1024 * 1024,
 		EventMax: 1024 * 1024,
 	}
+	loggly.buf = bytes.NewBuffer(make([]byte, 0, loggly.BatchMax))
 
+	// Set up our handler which writes to, and reads from PostgreSQL.
 	reqDumper := dumpto.HandlerFactory(pgDumper)
+
+	// Start up recurring job to process events stored in PostgreSQL.
 	interval := time.Duration(*batchInterval) * time.Second
 	ticker := time.NewTicker(interval)
 	go func() {
@@ -87,17 +162,16 @@ func main() {
 			select {
 			case <-ticker.C:
 				go func() {
-					n, err := dumpto.ProcessBatch(pgDumper, loggly)
+					_, err := dumpto.ProcessBatch(pgDumper, loggly)
 					if err != nil {
 						log.Printf("%s\n", err)
-					} else {
-						log.Printf("Processed %d items\n", n) // DEBUG
 					}
 				}()
 			}
 		}
 	}()
 
+	// Spin up HTTP listener on the requested port.
 	http.HandleFunc("/", reqDumper)
 	portSpec := fmt.Sprintf(":%d", *port)
 	log.Fatal(http.ListenAndServe(portSpec, nil))

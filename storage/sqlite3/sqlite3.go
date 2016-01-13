@@ -12,7 +12,7 @@ import (
 	"time"
 
 	sqlite3 "github.com/mattn/go-sqlite3"
-	"github.com/yargevad/http/dumpto"
+	"github.com/yargevad/httpdump/storage"
 )
 
 // https://www.sqlite.org/rescode.html
@@ -223,7 +223,7 @@ func ExecRetry(db *sql.DB, codes map[int]bool, after time.Duration, query string
 	}
 }
 
-func (sqld *SQLiteDumper) Dump(req *dumpto.Request) error {
+func (sqld *SQLiteDumper) Dump(req *storage.Request) error {
 	// Get a "read lock" on our db pool, if needed.
 	// The in-memory db doesn't need a lock since it won't change after the first init.
 	if sqld.inMemory == false {
@@ -292,9 +292,9 @@ func (sqld *SQLiteDumper) MarkBatch() (int64, error) {
 	return maxID.Int64, nil
 }
 
-func (sqld *SQLiteDumper) ReadRequests(batchID int64) ([]dumpto.Request, error) {
+func (sqld *SQLiteDumper) ReadRequests(batchID int64) ([]storage.Request, error) {
 	// TODO: make initial size configurable
-	reqs := make([]dumpto.Request, 0, 32)
+	reqs := make([]storage.Request, 0, 32)
 	n := 0
 
 	// Get all requests for this batch, retrying on SQL_LOCKED.
@@ -314,7 +314,7 @@ func (sqld *SQLiteDumper) ReadRequests(batchID int64) ([]dumpto.Request, error) 
 		if rows.Err() == io.EOF {
 			break
 		}
-		req := &dumpto.Request{}
+		req := &storage.Request{}
 		err = rows.Scan(&tmpID, &req.Head, &req.Data, &req.When)
 		if err != nil {
 			return nil, err

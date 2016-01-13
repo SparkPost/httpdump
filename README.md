@@ -1,10 +1,14 @@
-# http
+# httpdump
 
-Store-and-forward HTTP requests to Loggly.
+Store HTTP request data, and provide a simple framework for post-processing in parallel.
+
+### Example code
+
+The program in the `output/loggly` directory is provided as an example implementation.
 
 ### Command-line parameters
 
-The program in this root directory accepts two command line parameters and starts up an HTTP server on the specified port.
+The example program accepts two command line parameters and starts up an HTTP server on the specified port.
 
 **-port** (default 80) listen for http requests on this port  
 **-batch-interval** (default 10) how often to process stored requests, in seconds  
@@ -32,7 +36,8 @@ Here's a server example, which will listen for incoming HTTP requests on port `1
 
 ```
 $ export LOGGLY_TOKEN=ffffffff-ffff-ffff-ffff-ffffffffffff
-$ POSTGRESQL_DB=postgres ./http -port 12345
+$ go build output/loggly/loggly.go
+$ POSTGRESQL_DB=postgres ./loggly -port 12345
 ```
 
 And here's an example of `POST`ing to that server using `cURL`, sending the contents of the file `test.json`:
@@ -45,13 +50,13 @@ $ curl -XPOST -H 'Content-Type: application/json' --data @test.json http://127.0
 Once you've `POST`ed some data, wait a couple seconds (max 10, by default), and you'll see something like this for a successful batch upload:
 
 ```
-2015/10/27 11:23:40 http.go:62: Sent 854 bytes with status 200 OK
+2015/10/27 11:23:40 loggly.go:62: Sent 854 bytes with status 200 OK
 ```
 
 If there's an error, you'll see a dump of your request and Loggly's response. It will look something like this error, which is what shows up when a Loggly API key isn't set, and the local error checking is disabled:
 
 ```
-2015/10/27 11:17:32 http.go:57: POST /bulk//tag/bulk/ HTTP/1.1
+2015/10/27 11:17:32 loggly.go:57: POST /bulk/tag/bulk/ HTTP/1.1
 Host: logs-01.loggly.com
 User-Agent: Go-http-client/1.1
 Content-Length: 854

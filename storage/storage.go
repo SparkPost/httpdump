@@ -1,4 +1,4 @@
-package dumpto
+package storage
 
 import (
 	"fmt"
@@ -88,6 +88,9 @@ func ProcessBatch(b Batcher, p Processor) (int, error) {
 	return len(reqs), nil
 }
 
+// HandlerFactory returns a (you guessed it) handler function suitable for
+// passing to http.HandleFunc, which stores incoming request data using the
+// provided Dumper.
 func HandlerFactory(d Dumper) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var err error

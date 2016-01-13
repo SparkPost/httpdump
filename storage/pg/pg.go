@@ -4,11 +4,12 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 
 	"github.com/lib/pq"
-	"github.com/yargevad/http/dumpto"
+	"github.com/yargevad/httpdump/storage"
 )
 
 type PgDumper struct {
@@ -47,6 +48,7 @@ func DbConnect(pg *PgDumper) error {
 
 	dsn := strings.Join(opts, " ")
 
+	log.Printf("DSN=[%s]\n", dsn)
 	dbh, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return err
@@ -103,7 +105,7 @@ func DbConnect(pg *PgDumper) error {
 	return nil
 }
 
-func (pd *PgDumper) Dump(req *dumpto.Request) error {
+func (pd *PgDumper) Dump(req *storage.Request) error {
 	_, err := pd.dbh.Exec(fmt.Sprintf(`
 		INSERT INTO %s.raw_requests (head, data, "when")
 		VALUES ($1, $2, $3)
@@ -145,8 +147,8 @@ func (pd *PgDumper) MarkBatch() (int64, error) {
 	return maxID.Int64, nil
 }
 
-func (pd *PgDumper) ReadRequests(batchID int64) ([]dumpto.Request, error) {
-	reqs := make([]dumpto.Request, 0, 32)
+func (pd *PgDumper) ReadRequests(batchID int64) ([]storage.Request, error) {
+	reqs := make([]storage.Request, 0, 32)
 	n := 0
 
 	rows, err := pd.dbh.Query(fmt.Sprintf(`
@@ -165,7 +167,7 @@ func (pd *PgDumper) ReadRequests(batchID int64) ([]dumpto.Request, error) {
 		if rows.Err() == io.EOF {
 			break
 		}
-		req := &dumpto.Request{}
+		req := &storage.Request{}
 		err = rows.Scan(&tmpID, &req.Head, &req.Data, &req.When)
 		if err != nil {
 			return nil, err

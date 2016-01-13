@@ -12,8 +12,8 @@ import (
 	re "regexp"
 	"time"
 
-	"github.com/yargevad/http/dumpto"
-	"github.com/yargevad/http/dumpto/pg"
+	"github.com/yargevad/httpdump/storage"
+	"github.com/yargevad/httpdump/storage/pg"
 )
 
 // Command line option declarations.
@@ -67,9 +67,9 @@ func (l *Loggly) SendRequest() error {
 
 var lineBreak *re.Regexp = re.MustCompile(`\r?\n`)
 
-// ProcessRequests formats dumpto.Request objects on one line and
+// ProcessRequests formats storage.Request objects on one line and
 // submits to Loggly in appropriately-sized batches.
-func (l *Loggly) ProcessRequests(reqs []dumpto.Request) error {
+func (l *Loggly) ProcessRequests(reqs []storage.Request) error {
 	var size, esize int64
 	for _, req := range reqs {
 		head := lineBreak.ReplaceAll(req.Head, []byte(`\n`))
@@ -152,7 +152,7 @@ func main() {
 	loggly.buf = bytes.NewBuffer(make([]byte, 0, loggly.BatchMax))
 
 	// Set up our handler which writes to, and reads from PostgreSQL.
-	reqDumper := dumpto.HandlerFactory(pgDumper)
+	reqDumper := storage.HandlerFactory(pgDumper)
 
 	// Start up recurring job to process events stored in PostgreSQL.
 	interval := time.Duration(*batchInterval) * time.Second
@@ -162,7 +162,7 @@ func main() {
 			select {
 			case <-ticker.C:
 				go func() {
-					_, err := dumpto.ProcessBatch(pgDumper, loggly)
+					_, err := storage.ProcessBatch(pgDumper, loggly)
 					if err != nil {
 						log.Printf("%s\n", err)
 					}

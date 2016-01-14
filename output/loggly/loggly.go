@@ -12,8 +12,8 @@ import (
 	re "regexp"
 	"time"
 
-	"github.com/yargevad/httpdump/storage"
-	"github.com/yargevad/httpdump/storage/pg"
+	"github.com/SparkPost/httpdump/storage"
+	"github.com/SparkPost/httpdump/storage/pg"
 )
 
 // Command line option declarations.

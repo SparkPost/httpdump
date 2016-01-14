@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SparkPost/httpdump/storage"
 	"github.com/lib/pq"
-	"github.com/yargevad/httpdump/storage"
 )
 
 type PgDumper struct {

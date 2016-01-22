@@ -50,7 +50,7 @@ func SchemaInit(dbh *sql.DB, schema string) error {
 		for _, ddl := range ddls {
 			_, err := dbh.Exec(ddl)
 			if err != nil {
-				return err
+				return fmt.Errorf("pg.SchemaInit: %s", err)
 			}
 		}
 	}
@@ -63,7 +63,7 @@ func (pd *PgDumper) Dump(req *storage.Request) error {
 		VALUES ($1, $2, $3)
 	`, pd.Schema), string(req.Head), string(req.Data), req.When.Format(time.RFC3339))
 	if err != nil {
-		return err
+		return fmt.Errorf("pg.Dump (INSERT): %s", err)
 	}
 	return nil
 }
@@ -76,7 +76,7 @@ func (pd *PgDumper) MarkBatch() (int64, error) {
 	`, pd.Schema))
 	err := row.Scan(&maxID)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("pg.MarkBatch (SELECT): %s", err)
 	}
 	if maxID.Valid == false {
 		return 0, nil
@@ -87,7 +87,7 @@ func (pd *PgDumper) MarkBatch() (int64, error) {
 		 WHERE (batch_id = 0 OR batch_id IS NULL)
 		   AND request_id <= $1`, pd.Schema), maxID.Int64)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("pg.MarkBatch (UPDATE): %s", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
@@ -110,7 +110,7 @@ func (pd *PgDumper) ReadRequests(batchID int64) ([]storage.Request, error) {
 		 ORDER BY "when" ASC
 	`, pd.Schema), batchID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pg.ReadRequests (SELECT): %s", err)
 	}
 	defer rows.Close()
 
@@ -122,14 +122,14 @@ func (pd *PgDumper) ReadRequests(batchID int64) ([]storage.Request, error) {
 		req := &storage.Request{}
 		err = rows.Scan(&tmpID, &req.Head, &req.Data, &req.When)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("pg.ReadRequests (Scan): %s", err)
 		}
 		req.ID = &tmpID
 		reqs = append(reqs, *req)
 		n++
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("pg.ReadRequests (Err): %s", err)
 	}
 
 	return reqs, nil
@@ -140,7 +140,7 @@ func (pd *PgDumper) BatchDone(batchID int64) error {
 		DELETE FROM %s.raw_requests WHERE batch_id = $1
 	`, pd.Schema), batchID)
 	if err != nil {
-		return err
+		return fmt.Errorf("pg.BatchDone (DELETE): %s", err)
 	}
 	return nil
 }

@@ -12,6 +12,7 @@ import (
 	re "regexp"
 	"time"
 
+	"github.com/SparkPost/gopg"
 	"github.com/SparkPost/httpdump/storage"
 	"github.com/SparkPost/httpdump/storage/pg"
 )
@@ -130,14 +131,23 @@ func main() {
 		}
 	}
 
-	// Configure the PostgreSQL dumper.
-	pgDumper := &pg.PgDumper{
-		Db:     opts["POSTGRESQL_DB"],
-		Schema: opts["POSTGRESQL_SCHEMA"],
-		User:   opts["POSTGRESQL_USER"],
-		Pass:   opts["POSTGRESQL_PASS"],
+	pgcfg := &gopg.Config{
+		Db:   opts["POSTGRESQL_DB"],
+		User: opts["POSTGRESQL_USER"],
+		Pass: opts["POSTGRESQL_PASS"],
+		Opts: map[string]string{
+			"sslmode": "disable",
+		},
 	}
-	err := pg.DbConnect(pgDumper)
+	dbh, err := gopg.Connect(pgcfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Configure the PostgreSQL dumper.
+	pgDumper := &pg.PgDumper{Schema: opts["POSTGRESQL_SCHEMA"]}
+	pgDumper.Dbh = dbh
+	err = pg.SchemaInit(dbh, pgDumper.Schema)
 	if err != nil {
 		log.Fatal(err)
 	}

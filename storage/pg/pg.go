@@ -13,50 +13,29 @@ import (
 )
 
 type PgDumper struct {
-	Db     string
 	Schema string
-	Table  string
-	User   string
-	Pass   string
-	dbh    *sql.DB
+	Dbh    *sql.DB
 }
 
-func DbConnect(pg *PgDumper) error {
-	cfg := &gopg.Config{
-		Db:   pg.Db,
-		User: pg.User,
-		Pass: pg.Pass,
-		Opts: map[string]string{
-			"sslmode": "disable",
-		},
+func SchemaInit(dbh *sql.DB, schema string) error {
+	if schema == "" {
+		schema = "request_dump"
 	}
-	dbh, err := gopg.Connect(cfg)
-	if err != nil {
-		return err
-	}
-
-	if err = dbh.Ping(); err != nil {
-		return err
-	}
-
-	if pg.Schema == "" {
-		pg.Schema = "request_dump"
-	}
-	if strings.Index(pg.Schema, " ") >= 0 {
+	if strings.Index(schema, " ") >= 0 {
 		return fmt.Errorf("schemas containing a space are not supported")
 	}
 
 	// skip creation when schema already exists
-	exists, err := gopg.SchemaExists(pg.Schema)
+	exists, err := gopg.SchemaExists(dbh, schema)
 	if err != nil {
 		return err
 	}
-	pg.Schema = pq.QuoteIdentifier(pg.Schema)
+	schema = pq.QuoteIdentifier(schema)
 
 	// initialize schema where request data will be stored
 	if exists == false {
 		ddls := []string{
-			fmt.Sprintf("CREATE SCHEMA %s", pg.Schema),
+			fmt.Sprintf("CREATE SCHEMA %s", schema),
 			fmt.Sprintf(`
 				CREATE TABLE %s.raw_requests (
 					request_id bigserial primary key,
@@ -65,8 +44,8 @@ func DbConnect(pg *PgDumper) error {
 					"when"     timestamptz,
 					batch_id   bigint
 				)
-			`, pg.Schema),
-			fmt.Sprintf("CREATE INDEX raw_requests_batch_id_idx ON %s.raw_requests (batch_id)", pg.Schema),
+			`, schema),
+			fmt.Sprintf("CREATE INDEX raw_requests_batch_id_idx ON %s.raw_requests (batch_id)", schema),
 		}
 		for _, ddl := range ddls {
 			_, err := dbh.Exec(ddl)
@@ -75,14 +54,11 @@ func DbConnect(pg *PgDumper) error {
 			}
 		}
 	}
-
-	pg.dbh = dbh
-
 	return nil
 }
 
 func (pd *PgDumper) Dump(req *storage.Request) error {
-	_, err := pd.dbh.Exec(fmt.Sprintf(`
+	_, err := pd.Dbh.Exec(fmt.Sprintf(`
 		INSERT INTO %s.raw_requests (head, data, "when")
 		VALUES ($1, $2, $3)
 	`, pd.Schema), string(req.Head), string(req.Data), req.When.Format(time.RFC3339))
@@ -94,7 +70,7 @@ func (pd *PgDumper) Dump(req *storage.Request) error {
 
 func (pd *PgDumper) MarkBatch() (int64, error) {
 	var maxID sql.NullInt64
-	row := pd.dbh.QueryRow(fmt.Sprintf(`
+	row := pd.Dbh.QueryRow(fmt.Sprintf(`
 		SELECT max(request_id) FROM %s.raw_requests
 		 WHERE (batch_id = 0 OR batch_id IS NULL)
 	`, pd.Schema))
@@ -106,7 +82,7 @@ func (pd *PgDumper) MarkBatch() (int64, error) {
 		return 0, nil
 	}
 
-	res, err := pd.dbh.Exec(fmt.Sprintf(`
+	res, err := pd.Dbh.Exec(fmt.Sprintf(`
 		UPDATE %s.raw_requests SET batch_id = $1
 		 WHERE (batch_id = 0 OR batch_id IS NULL)
 		   AND request_id <= $1`, pd.Schema), maxID.Int64)
@@ -127,7 +103,7 @@ func (pd *PgDumper) ReadRequests(batchID int64) ([]storage.Request, error) {
 	reqs := make([]storage.Request, 0, 32)
 	n := 0
 
-	rows, err := pd.dbh.Query(fmt.Sprintf(`
+	rows, err := pd.Dbh.Query(fmt.Sprintf(`
 		SELECT request_id, head, data, "when"
 		  FROM %s.raw_requests
 		 WHERE batch_id = $1
@@ -160,7 +136,7 @@ func (pd *PgDumper) ReadRequests(batchID int64) ([]storage.Request, error) {
 }
 
 func (pd *PgDumper) BatchDone(batchID int64) error {
-	_, err := pd.dbh.Exec(fmt.Sprintf(`
+	_, err := pd.Dbh.Exec(fmt.Sprintf(`
 		DELETE FROM %s.raw_requests WHERE batch_id = $1
 	`, pd.Schema), batchID)
 	if err != nil {

@@ -4,10 +4,10 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
-	"log"
 	"strings"
 	"time"
 
+	"github.com/SparkPost/gopg"
 	"github.com/SparkPost/httpdump/storage"
 	"github.com/lib/pq"
 )
@@ -22,37 +22,19 @@ type PgDumper struct {
 }
 
 func DbConnect(pg *PgDumper) error {
-	opts := make([]string, 0, 4)
-	if pg.Db != "" {
-		if strings.Index(pg.Db, " ") >= 0 {
-			return fmt.Errorf("database names containing a space are not supported")
-		}
-		opts = append(opts, fmt.Sprintf("dbname=%s", pg.Db))
+	cfg := &gopg.Config{
+		Db:   pg.Db,
+		User: pg.User,
+		Pass: pg.Pass,
+		Opts: map[string]string{
+			"sslmode": "disable",
+		},
 	}
-
-	if pg.User != "" {
-		if strings.Index(pg.User, " ") >= 0 {
-			return fmt.Errorf("user names containing a space are not supported")
-		}
-		opts = append(opts, fmt.Sprintf("user=%s", pg.User))
-	}
-
-	if pg.Pass != "" {
-		if strings.Index(pg.Pass, " ") >= 0 {
-			return fmt.Errorf("passwords containing a space are not supported")
-		}
-		opts = append(opts, fmt.Sprintf("password=%s", pg.Pass))
-	}
-
-	opts = append(opts, "sslmode=disable")
-
-	dsn := strings.Join(opts, " ")
-
-	log.Printf("DSN=[%s]\n", dsn)
-	dbh, err := sql.Open("postgres", dsn)
+	dbh, err := gopg.Connect(cfg)
 	if err != nil {
 		return err
 	}
+
 	if err = dbh.Ping(); err != nil {
 		return err
 	}

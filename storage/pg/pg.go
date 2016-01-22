@@ -47,13 +47,7 @@ func DbConnect(pg *PgDumper) error {
 	}
 
 	// skip creation when schema already exists
-	exists := false
-	row := dbh.QueryRow(`
-		SELECT EXISTS(
-			SELECT 1 FROM information_schema.schemata
-			 WHERE schema_name = $1
-		)`, pg.Schema)
-	err = row.Scan(&exists)
+	exists, err := gopg.SchemaExists(pg.Schema)
 	if err != nil {
 		return err
 	}

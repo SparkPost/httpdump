@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 
@@ -25,27 +26,38 @@ func SchemaInit(dbh *sql.DB, schema string) error {
 		return fmt.Errorf("schemas containing a space are not supported")
 	}
 
-	// skip creation when schema already exists
+	// initialize schema where request data will be stored
 	exists, err := gopg.SchemaExists(dbh, schema)
 	if err != nil {
 		return err
 	}
-	schema = pq.QuoteIdentifier(schema)
-
-	// initialize schema where request data will be stored
 	if exists == false {
+		log.Printf("pg.SchemaInit: creating schema [%s]\n", schema)
+		_, err := dbh.Exec(fmt.Sprintf("CREATE SCHEMA %s", pq.QuoteIdentifier(schema)))
+		if err != nil {
+			return fmt.Errorf("pg.SchemaInit: %s", err)
+		}
+	}
+
+	table := "raw_requests"
+	exists, err = gopg.TableExistsInSchema(dbh, table, schema)
+	if err != nil {
+		return err
+	}
+	if exists == false {
+		log.Printf("pg.SchemaInit: creating table [%s.%s]\n", schema, table)
 		ddls := []string{
-			fmt.Sprintf("CREATE SCHEMA %s", schema),
 			fmt.Sprintf(`
-				CREATE TABLE %s.raw_requests (
+				CREATE TABLE %s.%s (
 					request_id bigserial primary key,
 					head       text,
 					data       text,
 					"when"     timestamptz,
 					batch_id   bigint
 				)
-			`, schema),
-			fmt.Sprintf("CREATE INDEX raw_requests_batch_id_idx ON %s.raw_requests (batch_id)", schema),
+			`, pq.QuoteIdentifier(schema), table),
+			fmt.Sprintf("CREATE INDEX raw_requests_batch_id_idx ON %s.%s (batch_id)",
+				schema, table),
 		}
 		for _, ddl := range ddls {
 			_, err := dbh.Exec(ddl)
@@ -54,6 +66,7 @@ func SchemaInit(dbh *sql.DB, schema string) error {
 			}
 		}
 	}
+
 	return nil
 }
 

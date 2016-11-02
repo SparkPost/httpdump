@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SparkPost/gopg"
 	"github.com/SparkPost/httpdump/storage"
 	"github.com/lib/pq"
 )
@@ -27,7 +26,7 @@ func SchemaInit(dbh *sql.DB, schema string) error {
 	}
 
 	// initialize schema where request data will be stored
-	exists, err := gopg.SchemaExists(dbh, schema)
+	exists, err := SchemaExists(dbh, schema)
 	if err != nil {
 		return err
 	}
@@ -40,7 +39,7 @@ func SchemaInit(dbh *sql.DB, schema string) error {
 	}
 
 	table := "raw_requests"
-	exists, err = gopg.TableExistsInSchema(dbh, table, schema)
+	exists, err = TableExistsInSchema(dbh, table, schema)
 	if err != nil {
 		return err
 	}

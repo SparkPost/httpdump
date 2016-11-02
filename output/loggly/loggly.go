@@ -12,7 +12,6 @@ import (
 	re "regexp"
 	"time"
 
-	"github.com/SparkPost/gopg"
 	"github.com/SparkPost/httpdump/storage"
 	"github.com/SparkPost/httpdump/storage/pg"
 )
@@ -131,7 +130,7 @@ func main() {
 		}
 	}
 
-	pgcfg := &gopg.Config{
+	pgcfg := &pg.PGConfig{
 		Db:   opts["POSTGRESQL_DB"],
 		User: opts["POSTGRESQL_USER"],
 		Pass: opts["POSTGRESQL_PASS"],
@@ -139,7 +138,7 @@ func main() {
 			"sslmode": "disable",
 		},
 	}
-	dbh, err := gopg.Connect(pgcfg)
+	dbh, err := pgcfg.Connect()
 	if err != nil {
 		log.Fatal(err)
 	}
